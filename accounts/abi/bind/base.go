@@ -334,10 +334,13 @@ func (c *BoundContract) createDynamicTx(opts *TransactOpts, contract *common.Add
 	gasLimit := opts.GasLimit
 	if opts.GasLimit == 0 {
 		var err error
+		// TODO 这里给一个合适的gas limit, 防止迭代次数太多
 		gasLimit, err = c.estimateGasLimit(opts, contract, input, nil, gasTipCap, gasFeeCap, value)
 		if err != nil {
 			return nil, err
 		}
+		// TODO 需要优化
+		gasLimit = gasLimit * 3 / 2
 	}
 	// create the transaction
 	nonce, err := c.getNonce(opts)
@@ -409,8 +412,10 @@ func (c *BoundContract) estimateGasLimit(opts *TransactOpts, contract *common.Ad
 			return 0, ErrNoCode
 		}
 	}
+	// Note: 这里给一个比较小的的gas limit, 防止迭代次数太多
 	msg := ethereum.CallMsg{
 		From:      opts.From,
+		Gas:       1000000,
 		To:        contract,
 		GasPrice:  gasPrice,
 		GasTipCap: gasTipCap,

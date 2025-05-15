@@ -395,6 +395,7 @@ func (b *Block) Nonce() uint64            { return binary.BigEndian.Uint64(b.hea
 func (b *Block) Bloom() Bloom             { return b.header.Bloom }
 func (b *Block) Coinbase() common.Address { return b.header.Coinbase }
 func (b *Block) Root() common.Hash        { return b.header.Root }
+func (b *Block) SetRoot(root common.Hash) { b.header.Root = root }
 func (b *Block) ParentHash() common.Hash  { return b.header.ParentHash }
 func (b *Block) TxHash() common.Hash      { return b.header.TxHash }
 func (b *Block) ReceiptHash() common.Hash { return b.header.ReceiptHash }
@@ -530,6 +531,12 @@ func (b *Block) Hash() common.Hash {
 	if hash := b.hash.Load(); hash != nil {
 		return *hash
 	}
+	h := b.header.Hash()
+	b.hash.Store(&h)
+	return h
+}
+
+func (b *Block) ReHash() common.Hash {
 	h := b.header.Hash()
 	b.hash.Store(&h)
 	return h

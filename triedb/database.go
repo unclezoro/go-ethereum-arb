@@ -31,6 +31,7 @@ import (
 
 // Config defines all necessary options for database.
 type Config struct {
+	NoTries   bool
 	Preimages bool           // Flag whether the preimage of node key is recorded
 	IsVerkle  bool           // Flag whether the db is holding a verkle tree
 	HashDB    *hashdb.Config // Configs for hash-based scheme
@@ -113,7 +114,14 @@ func NewDatabase(diskdb ethdb.Database, config *Config) *Database {
 	} else {
 		db.backend = hashdb.New(diskdb, config.HashDB)
 	}
+	if config.PathDB != nil && config.NoTries {
+		config.PathDB.NoTries = true
+	}
 	return db
+}
+
+func (db *Database) Config() *Config {
+	return db.config
 }
 
 // NodeReader returns a reader for accessing trie nodes within the specified state.
@@ -172,6 +180,17 @@ func (db *Database) Size() (common.StorageSize, common.StorageSize, common.Stora
 		preimages = db.preimages.size()
 	}
 	return diffs, nodes, preimages
+}
+
+// Head return the top non-fork difflayer/disklayer root hash for rewinding.
+// It's only supported by path-based database and will return empty hash for
+// others.
+func (db *Database) Head() common.Hash {
+	pdb, ok := db.backend.(*pathdb.Database)
+	if !ok {
+		return common.Hash{}
+	}
+	return pdb.Head()
 }
 
 // Scheme returns the node scheme used in the database.

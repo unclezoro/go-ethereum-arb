@@ -40,7 +40,7 @@ const (
 	codeSizeCacheSize = 100000
 
 	// Cache size granted for caching clean code.
-	codeCacheSize = 64 * 1024 * 1024
+	codeCacheSize = 512 * 1024 * 1024
 
 	// Number of address->curve point associations to keep.
 	pointCacheSize = 4096
@@ -59,6 +59,8 @@ type Database interface {
 
 	// OpenTrie opens the main account trie.
 	OpenTrie(root common.Hash) (Trie, error)
+
+	NoTries() bool
 
 	// OpenStorageTrie opens the storage trie of an account.
 	OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash, trie Trie) (Trie, error)
@@ -171,6 +173,7 @@ type CachingDB struct {
 	wasmdb        ethdb.KeyValueStore
 	triedb        *triedb.Database
 	snap          *snapshot.Tree
+	noTries       bool
 	codeCache     *lru.SizeConstrainedCache[common.Hash, []byte]
 	codeSizeCache *lru.Cache[common.Hash, int]
 	pointCache    *utils.PointCache
@@ -179,6 +182,7 @@ type CachingDB struct {
 // NewDatabase creates a state database with the provided data sources.
 func NewDatabase(triedb *triedb.Database, snap *snapshot.Tree) *CachingDB {
 	wasmdb, wasmTag := triedb.Disk().WasmDataBase()
+	noTries := triedb != nil && triedb.Config() != nil && triedb.Config().NoTries
 	return &CachingDB{
 		// Arbitrum only
 		activatedAsmCache:     lru.NewSizeConstrainedCache[activatedAsmCacheKey, []byte](activatedWasmCacheSize),
@@ -188,6 +192,7 @@ func NewDatabase(triedb *triedb.Database, snap *snapshot.Tree) *CachingDB {
 		disk:          triedb.Disk(),
 		wasmdb:        wasmdb,
 		triedb:        triedb,
+		noTries:       noTries,
 		snap:          snap,
 		codeCache:     lru.NewSizeConstrainedCache[common.Hash, []byte](codeCacheSize),
 		codeSizeCache: lru.NewCache[common.Hash, int](codeSizeCacheSize),
@@ -225,12 +230,15 @@ func (db *CachingDB) Reader(stateRoot common.Hash) (Reader, error) {
 	}
 	// Set up the trie reader, which is expected to always be available
 	// as the gatekeeper unless the state is corrupted.
-	tr, err := newTrieReader(stateRoot, db.triedb, db.pointCache)
-	if err != nil {
-		return nil, err
+	if !db.NoTries() {
+		// Set up the trie reader, which is expected to always be available
+		// as the gatekeeper unless the state is corrupted.
+		tr, err := newTrieReader(stateRoot, db.triedb, db.pointCache)
+		if err != nil {
+			return nil, err
+		}
+		readers = append(readers, tr)
 	}
-	readers = append(readers, tr)
-
 	combined, err := newMultiStateReader(readers...)
 	if err != nil {
 		return nil, err
@@ -240,6 +248,9 @@ func (db *CachingDB) Reader(stateRoot common.Hash) (Reader, error) {
 
 // OpenTrie opens the main account trie at a specific root hash.
 func (db *CachingDB) OpenTrie(root common.Hash) (Trie, error) {
+	if db.noTries {
+		return trie.NewEmptyTrie(), nil
+	}
 	if db.triedb.IsVerkle() {
 		return trie.NewVerkleTrie(root, db.triedb, db.pointCache)
 	}
@@ -250,11 +261,18 @@ func (db *CachingDB) OpenTrie(root common.Hash) (Trie, error) {
 	return tr, nil
 }
 
+func (db *CachingDB) NoTries() bool {
+	return db.noTries
+}
+
 // OpenStorageTrie opens the storage trie of an account.
 func (db *CachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Address, root common.Hash, self Trie) (Trie, error) {
 	// In the verkle case, there is only one tree. But the two-tree structure
 	// is hardcoded in the codebase. So we need to return the same trie in this
 	// case.
+	if db.noTries {
+		return trie.NewEmptyTrie(), nil
+	}
 	if db.triedb.IsVerkle() {
 		return self, nil
 	}
@@ -302,6 +320,8 @@ func mustCopyTrie(t Trie) Trie {
 	case *trie.StateTrie:
 		return t.Copy()
 	case *trie.VerkleTrie:
+		return t.Copy()
+	case *trie.EmptyTrie:
 		return t.Copy()
 	default:
 		panic(fmt.Errorf("unknown trie type %T", t))

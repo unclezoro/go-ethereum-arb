@@ -80,6 +80,7 @@ var (
 		utils.BlobPoolDataCapFlag,
 		utils.BlobPoolPriceBumpFlag,
 		utils.SyncModeFlag,
+		utils.TriesNoVerifyFlag,
 		utils.SyncTargetFlag,
 		utils.ExitWhenSyncedFlag,
 		utils.GCModeFlag,
@@ -256,6 +257,7 @@ func init() {
 		debug.Flags,
 		metricsFlags,
 	)
+
 	flags.AutoEnvVars(app.Flags, "GETH")
 
 	app.Before = func(ctx *cli.Context) error {

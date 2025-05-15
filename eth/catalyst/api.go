@@ -314,7 +314,7 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 	api.forkchoiceLock.Lock()
 	defer api.forkchoiceLock.Unlock()
 
-	log.Trace("Engine API request received", "method", "ForkchoiceUpdated", "head", update.HeadBlockHash, "finalized", update.FinalizedBlockHash, "safe", update.SafeBlockHash)
+	log.Info("Engine API request received", "method", "ForkchoiceUpdated", "head", update.HeadBlockHash, "finalized", update.FinalizedBlockHash, "safe", update.SafeBlockHash)
 	if update.HeadBlockHash == (common.Hash{}) {
 		log.Warn("Forkchoice requested update to zero hash")
 		return engine.STATUS_INVALID, nil // TODO(karalabe): Why does someone send us this?
@@ -361,6 +361,12 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 		}
 		return engine.STATUS_SYNCING, nil
 	}
+
+	if block.Root() == (common.Hash{}) {
+		log.Error("Block root is 0x00 which is unexpected", "root", block.Root())
+		return engine.STATUS_INVALID, errors.New("block root is 0x00")
+	}
+
 	// Block is known locally, just sanity check that the beacon client does not
 	// attempt to push us back to before the merge.
 	if block.Difficulty().BitLen() > 0 && block.NumberU64() > 0 {
@@ -399,7 +405,6 @@ func (api *ConsensusAPI) forkchoiceUpdated(update engine.ForkchoiceStateV1, payl
 	// If the beacon client also advertised a finalized block, mark the local
 	// chain final and completely in PoS mode.
 	if update.FinalizedBlockHash != (common.Hash{}) {
-		// If the finalized block is not in our canonical tree, something is wrong
 		finalBlock := api.eth.BlockChain().GetBlockByHash(update.FinalizedBlockHash)
 		if finalBlock == nil {
 			log.Warn("Final block not available in database", "hash", update.FinalizedBlockHash)
@@ -522,7 +527,7 @@ func (api *ConsensusAPI) GetPayloadV4(payloadID engine.PayloadID) (*engine.Execu
 }
 
 func (api *ConsensusAPI) getPayload(payloadID engine.PayloadID, full bool) (*engine.ExecutionPayloadEnvelope, error) {
-	log.Trace("Engine API request received", "method", "GetPayload", "id", payloadID)
+	log.Info("Engine API request received", "method", "GetPayload", "id", payloadID)
 	data := api.localBlocks.get(payloadID, full)
 	if data == nil {
 		return nil, engine.UnknownPayload
@@ -914,7 +919,7 @@ func (api *ConsensusAPI) newPayload(params engine.ExecutableData, versionedHashe
 		log.Warn("State not available, ignoring new payload")
 		return engine.PayloadStatusV1{Status: engine.ACCEPTED}, nil
 	}
-	log.Trace("Inserting block without sethead", "hash", block.Hash(), "number", block.Number())
+	log.Info("Inserting block without sethead", "hash", block.Hash(), "number", block.Number())
 	proofs, err := api.eth.BlockChain().InsertBlockWithoutSetHead(block, witness)
 	if err != nil {
 		log.Warn("NewPayload: inserting block failed", "error", err)

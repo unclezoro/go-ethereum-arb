@@ -133,35 +133,62 @@ func (v *BlockValidator) ValidateState(block *types.Block, statedb *state.StateD
 	// Receipts must go through MakeReceipt to calculate the receipt's bloom
 	// already. Merge the receipt's bloom together instead of recalculating
 	// everything.
-	rbloom := types.MergeBloom(res.Receipts)
-	if rbloom != header.Bloom {
-		return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
+	validateFuns := []func() error{
+		func() error {
+			rbloom := types.MergeBloom(res.Receipts)
+			if rbloom != header.Bloom {
+				return fmt.Errorf("invalid bloom (remote: %x  local: %x)", header.Bloom, rbloom)
+			}
+			return nil
+		},
 	}
 	// In stateless mode, return early because the receipt and state root are not
 	// provided through the witness, rather the cross validator needs to return it.
-	if stateless {
-		return nil
+	if !stateless {
+		validateFuns = append(validateFuns, func() error {
+			// The receipt Trie's root (R = (Tr [[H1, R1], ... [Hn, Rn]]))
+			receiptSha := types.DeriveSha(res.Receipts, trie.NewStackTrie(nil))
+			if receiptSha != header.ReceiptHash {
+				return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
+			}
+			// Validate the parsed requests match the expected header value.
+			if header.RequestsHash != nil {
+				reqhash := types.CalcRequestsHash(res.Requests)
+				if reqhash != *header.RequestsHash {
+					return fmt.Errorf("invalid requests hash (remote: %x local: %x)", *header.RequestsHash, reqhash)
+				}
+			} else if res.Requests != nil {
+				return errors.New("block has requests before prague fork")
+			}
+			return nil
+		})
+		validateFuns = append(validateFuns, func() error {
+			// Validate the state root against the received state root and throw
+			// an error if they don't match.
+			if root := statedb.IntermediateRoot(v.config.IsEIP158(header.Number)); header.Root != root {
+				return fmt.Errorf("invalid merkle root (remote: %x local: %x) dberr: %w", header.Root, root, statedb.Error())
+			}
+			return nil
+
+		})
 	}
-	// The receipt Trie's root (R = (Tr [[H1, R1], ... [Hn, Rn]]))
-	receiptSha := types.DeriveSha(res.Receipts, trie.NewStackTrie(nil))
-	if receiptSha != header.ReceiptHash {
-		return fmt.Errorf("invalid receipt root hash (remote: %x local: %x)", header.ReceiptHash, receiptSha)
+
+	validateRes := make(chan error, len(validateFuns))
+	for _, f := range validateFuns {
+		tmpFunc := f
+		go func() {
+			validateRes <- tmpFunc()
+		}()
 	}
-	// Validate the parsed requests match the expected header value.
-	if header.RequestsHash != nil {
-		reqhash := types.CalcRequestsHash(res.Requests)
-		if reqhash != *header.RequestsHash {
-			return fmt.Errorf("invalid requests hash (remote: %x local: %x)", *header.RequestsHash, reqhash)
+
+	var err error
+	for i := 0; i < len(validateFuns); i++ {
+		r := <-validateRes
+		if r != nil && err == nil {
+			err = r
 		}
-	} else if res.Requests != nil {
-		return errors.New("block has requests before prague fork")
 	}
-	// Validate the state root against the received state root and throw
-	// an error if they don't match.
-	if root := statedb.IntermediateRoot(v.config.IsEIP158(header.Number)); header.Root != root {
-		return fmt.Errorf("invalid merkle root (remote: %x local: %x) dberr: %w", header.Root, root, statedb.Error())
-	}
-	return nil
+	return err
 }
 
 // CalcGasLimit computes the gas limit of the next block after parent. It aims

@@ -1598,6 +1598,25 @@ func (api *TransactionAPI) GetTransactionReceipt(ctx context.Context, hash commo
 	return marshalReceipt(ctx, receipt, blockHash, blockNumber, signer, tx, int(index), api.b)
 }
 
+func (api *TransactionAPI) GetTransactionRawReceipt(ctx context.Context, hash common.Hash) (*types.Receipt, error) {
+	found, _, blockHash, _, index, err := api.b.GetTransaction(ctx, hash)
+	if err != nil {
+		return nil, NewTxIndexingError() // transaction is not fully indexed
+	}
+	if !found {
+		return nil, nil // transaction is not existent or reachable
+	}
+	receipts, err := api.b.GetReceipts(ctx, blockHash)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(receipts)) <= index {
+		return nil, nil
+	}
+	receipt := receipts[index]
+	return receipt, nil
+}
+
 // marshalReceipt marshals a transaction receipt into a JSON object.
 func marshalReceipt(ctx context.Context, receipt *types.Receipt, blockHash common.Hash, blockNumber uint64, signer types.Signer, tx *types.Transaction, txIndex int, backend Backend) (map[string]interface{}, error) {
 	from, _ := types.Sender(signer, tx)

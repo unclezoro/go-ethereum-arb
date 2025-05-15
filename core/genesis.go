@@ -168,6 +168,10 @@ func hashAlloc(ga *types.GenesisAlloc, isVerkle bool) (common.Hash, error) {
 // flushAlloc is very similar with hash, but the main difference is all the
 // generated states will be persisted into the given database.
 func flushAlloc(ga *types.GenesisAlloc, triedb *triedb.Database) (common.Hash, error) {
+	triedbConfig := triedb.Config()
+	if triedbConfig != nil {
+		triedbConfig.NoTries = false
+	}
 	emptyRoot := types.EmptyRootHash
 	if triedb.IsVerkle() {
 		emptyRoot = types.EmptyVerkleHash

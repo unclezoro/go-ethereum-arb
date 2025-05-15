@@ -757,6 +757,7 @@ func (n *Node) OpenDatabaseWithExtraOptions(name string, cache, handles int, nam
 
 	var db ethdb.Database
 	var err error
+	fmt.Println("datadir", n.config.DataDir)
 	if n.config.DataDir == "" {
 		db = rawdb.NewMemoryDatabase()
 	} else {

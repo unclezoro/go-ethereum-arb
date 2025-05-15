@@ -343,7 +343,6 @@ func (c *ChainIndexer) updateLoop() {
 						return
 					default:
 					}
-					c.log.Error("Section processing failed", "error", err)
 				}
 				c.lock.Lock()
 
