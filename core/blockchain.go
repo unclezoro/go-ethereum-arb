@@ -18,8 +18,10 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"io"
 	"math"
 	"math/big"
@@ -338,6 +340,7 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 	if chainConfig != nil && chainConfig.IsArbitrum() {
 		genesisHash = rawdb.ReadCanonicalHash(db, chainConfig.ArbitrumChainParams.GenesisBlockNum)
 		if genesisHash == (common.Hash{}) {
+			log.Error("failed when build BlockChain", "height", chainConfig.ArbitrumChainParams.GenesisBlockNum)
 			return nil, ErrNoGenesis
 		}
 	} else {
@@ -392,10 +395,13 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, chainConfig *par
 
 	bc.gcprocRandOffset = bc.generateGcprocRandOffset()
 
-	bc.genesisBlock = bc.GetBlockByNumber(0)
-	if bc.genesisBlock == nil {
-		return nil, ErrNoGenesis
+	client, _ := ethclient.Dial("https://open-platform.nodereal.io/5d9c218e356942a6a9c577e2aadd174c/arbitrum-nitro/")
+	gb, err := client.BlockByNumber(context.Background(), big.NewInt(0))
+	if err != nil {
+		return nil, err
 	}
+	bc.genesisBlock = gb
+	// bc.genesisBlock = bc.GetBlockByNumber(0)
 
 	bc.currentBlock.Store(nil)
 	bc.currentSnapBlock.Store(nil)

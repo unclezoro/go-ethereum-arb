@@ -17,8 +17,11 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/ethclient"
+	"math/big"
 	"sync/atomic"
 	"time"
 
@@ -80,10 +83,12 @@ func NewHeaderChain(chainDb ethdb.Database, config *params.ChainConfig, engine c
 		procInterrupt: procInterrupt,
 		engine:        engine,
 	}
-	hc.genesisHeader = hc.GetHeaderByNumber(0)
-	if hc.genesisHeader == nil {
-		return nil, ErrNoGenesis
+	client, _ := ethclient.Dial("https://open-platform.nodereal.io/5d9c218e356942a6a9c577e2aadd174c/arbitrum-nitro/")
+	gh, err := client.HeaderByNumber(context.Background(), big.NewInt(0))
+	if err != nil {
+		return nil, err
 	}
+	hc.genesisHeader = gh
 	hc.currentHeader.Store(hc.genesisHeader)
 	if head := rawdb.ReadHeadBlockHash(chainDb); head != (common.Hash{}) {
 		if chead := hc.GetHeaderByHash(head); chead != nil {
