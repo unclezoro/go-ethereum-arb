@@ -24,7 +24,7 @@ import (
 	"log"
 )
 
-const prefetchThread = 6
+const prefetchThread = 3
 
 // statePrefetcher is a basic Prefetcher, which blindly executes a block on top
 // of an arbitrary state with the goal of prefetching potentially useful state
