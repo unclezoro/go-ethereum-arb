@@ -18,9 +18,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"time"
@@ -33,6 +35,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -63,6 +66,29 @@ two version states are available: genesis and the specific one.
 The default pruning target is the HEAD-127 state.
 
 WARNING: it's only supported in hash mode(--state.scheme=hash)".
+`,
+			},
+			{
+				Name: "insecure-prune-pathdb",
+				Usage: "Prune all pathdb state data, it will break storage for fullnode, only suitable for fast node " +
+					"who do not need trie storage at all",
+				ArgsUsage: "",
+				Action:    prunePathDB,
+				Category:  "MISCELLANEOUS COMMANDS",
+				Flags: []cli.Flag{
+					utils.DataDirFlag,
+					utils.AncientFlag,
+				},
+				Description: `
+will prune all historical trie state data except genesis block.
+All trie nodes will be deleted from the database. 
+
+It expects the genesis file as argument.
+
+WARNING: It's necessary to delete the trie clean cache after the pruning.
+If you specify another directory for the trie clean cache via "--cache.trie.journal"
+during the use of Geth, please also specify it here for correct deletion. Otherwise
+the trie clean cache with default directory will be deleted.
 `,
 			},
 			{
@@ -165,6 +191,89 @@ the expected order for the overlay tree migration.
 	}
 )
 
+// rangeCompactionThreshold is the minimal deleted entry number for
+// triggering range compaction. It's a quite arbitrary number but just
+// to avoid triggering range compaction because of small deletion.
+const rangeCompactionThreshold = 1000000
+
+func prunePathDB(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	pruneDB := utils.MakeChainDatabase(ctx, stack, false)
+	defer pruneDB.Close()
+
+	var (
+		count  int
+		size   common.StorageSize
+		pstart = time.Now()
+		logged = time.Now()
+		batch  = pruneDB.NewBatch()
+		iter   = pruneDB.NewIterator(nil, nil)
+	)
+	for iter.Next() {
+		key := iter.Key()
+		doDelete := rawdb.IsLegacyTrieNode(key, iter.Value())
+		if doDelete {
+			count += 1
+			size += common.StorageSize(len(key) + len(iter.Value()))
+			batch.Delete(key)
+
+			var eta time.Duration // Realistically will never remain uninited
+			if done := binary.BigEndian.Uint64(key[:8]); done > 0 {
+				var (
+					left  = math.MaxUint64 - binary.BigEndian.Uint64(key[:8])
+					speed = done/uint64(time.Since(pstart)/time.Millisecond+1) + 1 // +1s to avoid division by zero
+				)
+				eta = time.Duration(left/speed) * time.Millisecond
+			}
+			if time.Since(logged) > 8*time.Second {
+				log.Info("Pruning state data", "nodes", count, "size", size,
+					"elapsed", common.PrettyDuration(time.Since(pstart)), "eta", common.PrettyDuration(eta))
+				logged = time.Now()
+			}
+			// Recreate the iterator after every batch commit in order
+			// to allow the underlying compactor to delete the entries.
+			if batch.ValueSize() >= ethdb.IdealBatchSize {
+				batch.Write()
+				batch.Reset()
+
+				iter.Release()
+				iter = pruneDB.NewIterator(nil, key)
+			}
+		}
+	}
+	if batch.ValueSize() > 0 {
+		batch.Write()
+		batch.Reset()
+	}
+	iter.Release()
+	log.Info("Pruned path db data", "nodes", count, "size", size, "elapsed", common.PrettyDuration(time.Since(pstart)))
+
+	// Start compactions, will remove the deleted data from the disk immediately.
+	// Note for small pruning, the compaction is skipped.
+	if count >= rangeCompactionThreshold {
+		cstart := time.Now()
+		for b := 0x00; b <= 0xf0; b += 0x10 {
+			var (
+				start = []byte{byte(b)}
+				end   = []byte{byte(b + 0x10)}
+			)
+			if b == 0xf0 {
+				end = nil
+			}
+			log.Info("Compacting database", "range", fmt.Sprintf("%#x-%#x", start, end), "elapsed", common.PrettyDuration(time.Since(cstart)))
+			if err := pruneDB.Compact(start, end); err != nil {
+				log.Error("Database compaction failed", "error", err)
+				return err
+			}
+		}
+		log.Info("Database compaction finished", "elapsed", common.PrettyDuration(time.Since(cstart)))
+	}
+
+	return nil
+}
+
 // Deprecation: this command should be deprecated once the hash-based
 // scheme is deprecated.
 func pruneState(ctx *cli.Context) error {
@@ -174,9 +283,6 @@ func pruneState(ctx *cli.Context) error {
 	chaindb := utils.MakeChainDatabase(ctx, stack, false)
 	defer chaindb.Close()
 
-	if rawdb.ReadStateScheme(chaindb) != rawdb.HashScheme {
-		log.Crit("Offline pruning is not required for path scheme")
-	}
 	prunerconfig := pruner.Config{
 		Datadir:   stack.ResolvePath(""),
 		BloomSize: ctx.Uint64(utils.BloomFilterSizeFlag.Name),
@@ -230,7 +336,7 @@ func verifyState(ctx *cli.Context) error {
 		NoBuild:    true,
 		AsyncBuild: false,
 	}
-	snaptree, err := snapshot.New(snapConfig, chaindb, triedb, headBlock.Root())
+	snaptree, err := snapshot.New(snapConfig, chaindb, triedb, headBlock.Root(), false)
 	if err != nil {
 		log.Error("Failed to open snapshot tree", "err", err)
 		return err
@@ -561,7 +667,7 @@ func dumpState(ctx *cli.Context) error {
 		NoBuild:    true,
 		AsyncBuild: false,
 	}
-	snaptree, err := snapshot.New(snapConfig, db, triedb, root)
+	snaptree, err := snapshot.New(snapConfig, db, triedb, root, false)
 	if err != nil {
 		return err
 	}
@@ -658,7 +764,7 @@ func snapshotExportPreimages(ctx *cli.Context) error {
 		NoBuild:    true,
 		AsyncBuild: false,
 	}
-	snaptree, err := snapshot.New(snapConfig, chaindb, triedb, root)
+	snaptree, err := snapshot.New(snapConfig, chaindb, triedb, root, false)
 	if err != nil {
 		return err
 	}

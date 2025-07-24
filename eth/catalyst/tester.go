@@ -17,12 +17,16 @@
 package catalyst
 
 import (
+	"context"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/eth/ethconfig"
+	"github.com/ethereum/go-ethereum/ethclient"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
 )
@@ -62,28 +66,77 @@ func (tester *FullSyncTester) Start() error {
 
 		// Trigger beacon sync with the provided block hash as trusted
 		// chain head.
-		err := tester.backend.Downloader().BeaconDevSync(ethconfig.FullSync, tester.target, tester.closed)
-		if err != nil {
-			log.Info("Failed to trigger beacon sync", "err", err)
+		var targetHeader *types.Header
+		var target common.Hash
+		var toLatest bool
+		var client *ethclient.Client
+		var err error
+		if tester.target == (common.Hash{}) {
+			url := os.Getenv("OP_GETH_BASE_RPC")
+			client, err = ethclient.Dial(url)
+			if err != nil {
+				panic(err)
+			}
+			h, err := client.HeaderByNumber(context.Background(), nil)
+			if err != nil {
+				log.Error("Failed to get target hash through rpc", "err", err)
+			}
+			targetHeader = h
+			target = targetHeader.Hash()
+			toLatest = true
+		} else {
+			target = tester.target
+			toLatest = false
 		}
 
 		ticker := time.NewTicker(time.Second * 5)
 		defer ticker.Stop()
 
 		for {
-			select {
-			case <-ticker.C:
-				// Stop in case the target block is already stored locally.
-				if block := tester.backend.BlockChain().GetBlockByHash(tester.target); block != nil {
-					log.Info("Full-sync target reached", "number", block.NumberU64(), "hash", block.Hash())
-					go tester.stack.Close() // async since we need to close ourselves
+			if toLatest {
+				log.Info("start to sync to new header", "height", targetHeader.Number, "hash", targetHeader.Hash())
+				err := tester.backend.Downloader().BeaconSync(ethconfig.FullSync, targetHeader, targetHeader)
+				if err != nil {
+					log.Info("Failed to trigger beacon sync", "err", err)
+				}
+			} else {
+				err := tester.backend.Downloader().BeaconDevSync(ethconfig.FullSync, target, tester.closed)
+				if err != nil {
+					log.Info("Failed to trigger beacon sync", "err", err)
+				}
+			}
+		outerLoop:
+			for {
+				select {
+				case <-ticker.C:
+					// Stop in case the target block is already stored locally.
+					if block := tester.backend.BlockChain().GetBlockByHash(target); block != nil {
+						log.Info("Full-sync target reached", "number", block.NumberU64(), "hash", block.Hash())
+						// go tester.stack.Close() // async since we need to close ourselves
+						if !toLatest {
+							return
+						} else {
+							if int64(block.Time()+60) < time.Now().Unix() {
+								h, err := client.HeaderByNumber(context.Background(), nil)
+								if err != nil {
+									log.Error("Failed to get target hash through rpc", "err", err)
+									return
+								}
+								target = h.Hash()
+								targetHeader = h
+								break outerLoop
+							} else {
+								return
+							}
+						}
+					}
+
+				case <-tester.closed:
 					return
 				}
-
-			case <-tester.closed:
-				return
 			}
 		}
+
 	}()
 	return nil
 }

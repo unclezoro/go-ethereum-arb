@@ -101,14 +101,14 @@ func NewPruner(db ethdb.Database, config Config) (*Pruner, error) {
 		NoBuild:    true,
 		AsyncBuild: false,
 	}
-	snaptree, err := snapshot.New(snapconfig, db, triedb, headBlock.Root())
+	snaptree, err := snapshot.New(snapconfig, db, triedb, headBlock.Root(), false)
 	if err != nil {
 		return nil, err // The relevant snapshot(s) might not exist
 	}
 	// Sanitize the bloom filter size if it's too small.
-	if config.BloomSize < 256 {
+	if config.BloomSize < 10 {
 		log.Warn("Sanitizing bloomfilter size", "provided(MB)", config.BloomSize, "updated(MB)", 256)
-		config.BloomSize = 256
+		config.BloomSize = 10
 	}
 	stateBloom, err := newStateBloomWithSize(config.BloomSize)
 	if err != nil {
@@ -561,15 +561,6 @@ func (p *Pruner) Prune(inputRoots []common.Hash) error {
 	start := time.Now()
 	for _, root := range roots {
 		log.Info("Building bloom filter for pruning", "root", root)
-		if p.snaptree.Snapshot(root) != nil {
-			if err := snapshot.GenerateTrie(p.snaptree, root, p.db, p.stateBloom); err != nil {
-				return err
-			}
-		} else {
-			if err := dumpRawTrieDescendants(p.db, root, p.stateBloom, &p.config); err != nil {
-				return err
-			}
-		}
 	}
 	// Traverse the genesis, put all genesis state entries into the
 	// bloom filter too.
@@ -622,7 +613,7 @@ func RecoverPruning(datadir string, db ethdb.Database, threads int) error {
 	}
 	// Offline pruning is only supported in legacy hash based scheme.
 	triedb := triedb.NewDatabase(db, triedb.HashDefaults)
-	snaptree, err := snapshot.New(snapconfig, db, triedb, headBlock.Root())
+	snaptree, err := snapshot.New(snapconfig, db, triedb, headBlock.Root(), false)
 	if err != nil {
 		return err // The relevant snapshot(s) might not exist
 	}

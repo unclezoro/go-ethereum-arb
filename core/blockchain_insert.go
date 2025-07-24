@@ -80,6 +80,7 @@ func (st *insertStats) report(chain []*types.Block, index int, snapDiffItems, sn
 		if st.ignored > 0 {
 			context = append(context, []interface{}{"ignored", st.ignored}...)
 		}
+		context = append(context, []interface{}{"delay", time.Now().Sub(time.Unix(int64(end.Time()), 0)).String()}...)
 		if setHead {
 			log.Info("Imported new chain segment", context...)
 		} else {

@@ -222,6 +222,14 @@ var (
 		Usage:    "Reduce key-derivation RAM & CPU usage at some expense of KDF strength",
 		Category: flags.AccountCategory,
 	}
+
+	TriesNoVerifyFlag = &cli.BoolFlag{
+		Name:     "tries-no-verify",
+		Usage:    "no merkle state root verification at all",
+		Value:    true,
+		Category: flags.FastNodeCategory,
+	}
+
 	EthRequiredBlocksFlag = &cli.StringFlag{
 		Name:     "eth.requiredblocks",
 		Usage:    "Comma separated block number-to-hash mappings to require for peering (<number>=<hash>)",
@@ -230,7 +238,7 @@ var (
 	BloomFilterSizeFlag = &cli.Uint64Flag{
 		Name:     "bloomfilter.size",
 		Usage:    "Megabytes of memory allocated to bloom-filter for pruning",
-		Value:    2048,
+		Value:    10,
 		Category: flags.EthCategory,
 	}
 	OverrideCancun = &cli.Uint64Flag{
@@ -901,7 +909,6 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Value:    metrics.DefaultConfig.InfluxDBTags,
 		Category: flags.MetricsCategory,
 	}
-
 	MetricsEnableInfluxDBV2Flag = &cli.BoolFlag{
 		Name:     "metrics.influxdbv2",
 		Usage:    "Enable metrics export/push to an external InfluxDB v2 database",
@@ -927,6 +934,23 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Usage:    "InfluxDB organization name (v2 only)",
 		Value:    metrics.DefaultConfig.InfluxDBOrganization,
 		Category: flags.MetricsCategory,
+	}
+
+	// Searcher flag group
+	SearcherEnabledFlag = &cli.BoolFlag{
+		Name:     "searcher",
+		Usage:    "Enable MEV searcher functionality",
+		Category: flags.EthCategory,
+	}
+	SearcherConfigFlag = &cli.StringFlag{
+		Name:     "searcher.config",
+		Usage:    "Path to the searcher configuration file",
+		Category: flags.EthCategory,
+	}
+	SearcherDecryptKeyFlag = &cli.StringFlag{
+		Name:     "searcher.decryptkey-password",
+		Usage:    "Password for deriving searcher decryption key (will be securely hashed to generate a 32-byte key)",
+		Category: flags.EthCategory,
 	}
 )
 
@@ -1620,6 +1644,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 
 		cfg.StateScheme = rawdb.HashScheme
 		log.Warn("Forcing hash state-scheme for archive mode")
+	}
+	if ctx.IsSet(TriesNoVerifyFlag.Name) {
+		cfg.TriesNoVerify = ctx.Bool(TriesNoVerifyFlag.Name)
 	}
 	if ctx.IsSet(CacheFlag.Name) || ctx.IsSet(CacheTrieFlag.Name) {
 		cfg.TrieCleanCache = ctx.Int(CacheFlag.Name) * ctx.Int(CacheTrieFlag.Name) / 100

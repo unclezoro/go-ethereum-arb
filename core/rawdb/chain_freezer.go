@@ -48,6 +48,7 @@ type chainFreezer struct {
 	quit    chan struct{}
 	wg      sync.WaitGroup
 	trigger chan chan struct{} // Manual blocking freeze trigger, test determinism
+	prune   bool
 }
 
 // newChainFreezer initializes the freezer for ancient chain segment.
@@ -73,6 +74,7 @@ func newChainFreezer(datadir string, namespace string, readonly bool) (*chainFre
 		AncientStore: freezer,
 		quit:         make(chan struct{}),
 		trigger:      make(chan chan struct{}),
+		prune:        true,
 	}, nil
 }
 
@@ -123,17 +125,13 @@ func (f *chainFreezer) readFinalizedNumber(db ethdb.KeyValueReader) uint64 {
 func (f *chainFreezer) freezeThreshold(db ethdb.KeyValueReader) (uint64, error) {
 	var (
 		head      = f.readHeadNumber(db)
-		final     = f.readFinalizedNumber(db)
 		headLimit uint64
 	)
 	if head > params.FullImmutabilityThreshold {
 		headLimit = head - params.FullImmutabilityThreshold
 	}
-	if final == 0 && headLimit == 0 {
+	if headLimit == 0 {
 		return 0, errors.New("freezing threshold is not available")
-	}
-	if final > headLimit {
-		return final, nil
 	}
 	return headLimit, nil
 }
@@ -300,33 +298,35 @@ func (f *chainFreezer) freezeRange(nfdb *nofreezedb, number, limit uint64) (hash
 		for ; number <= limit; number++ {
 			// Retrieve all the components of the canonical block.
 			hash := ReadCanonicalHash(nfdb, number)
-			if hash == (common.Hash{}) {
-				return fmt.Errorf("canonical hash missing, can't freeze block %d", number)
-			}
-			header := ReadHeaderRLP(nfdb, hash, number)
-			if len(header) == 0 {
-				return fmt.Errorf("block header missing, can't freeze block %d", number)
-			}
-			body := ReadBodyRLP(nfdb, hash, number)
-			if len(body) == 0 {
-				return fmt.Errorf("block body missing, can't freeze block %d", number)
-			}
-			receipts := ReadReceiptsRLP(nfdb, hash, number)
-			if len(receipts) == 0 {
-				return fmt.Errorf("block receipts missing, can't freeze block %d", number)
-			}
-			// Write to the batch.
-			if err := op.AppendRaw(ChainFreezerHashTable, number, hash[:]); err != nil {
-				return fmt.Errorf("can't write hash to Freezer: %v", err)
-			}
-			if err := op.AppendRaw(ChainFreezerHeaderTable, number, header); err != nil {
-				return fmt.Errorf("can't write header to Freezer: %v", err)
-			}
-			if err := op.AppendRaw(ChainFreezerBodiesTable, number, body); err != nil {
-				return fmt.Errorf("can't write body to Freezer: %v", err)
-			}
-			if err := op.AppendRaw(ChainFreezerReceiptTable, number, receipts); err != nil {
-				return fmt.Errorf("can't write receipts to Freezer: %v", err)
+			if !f.prune {
+				if hash == (common.Hash{}) {
+					return fmt.Errorf("canonical hash missing, can't freeze block %d", number)
+				}
+				header := ReadHeaderRLP(nfdb, hash, number)
+				if len(header) == 0 {
+					return fmt.Errorf("block header missing, can't freeze block %d", number)
+				}
+				body := ReadBodyRLP(nfdb, hash, number)
+				if len(body) == 0 {
+					return fmt.Errorf("block body missing, can't freeze block %d", number)
+				}
+				receipts := ReadReceiptsRLP(nfdb, hash, number)
+				if len(receipts) == 0 {
+					return fmt.Errorf("block receipts missing, can't freeze block %d", number)
+				}
+				// Write to the batch.
+				if err := op.AppendRaw(ChainFreezerHashTable, number, hash[:]); err != nil {
+					return fmt.Errorf("can't write hash to Freezer: %v", err)
+				}
+				if err := op.AppendRaw(ChainFreezerHeaderTable, number, header); err != nil {
+					return fmt.Errorf("can't write header to Freezer: %v", err)
+				}
+				if err := op.AppendRaw(ChainFreezerBodiesTable, number, body); err != nil {
+					return fmt.Errorf("can't write body to Freezer: %v", err)
+				}
+				if err := op.AppendRaw(ChainFreezerReceiptTable, number, receipts); err != nil {
+					return fmt.Errorf("can't write receipts to Freezer: %v", err)
+				}
 			}
 			hashes = append(hashes, hash)
 		}

@@ -2,7 +2,7 @@
 # with Go source code. If you know what GOPATH is then you probably
 # don't need to bother with make.
 
-.PHONY: geth all test lint fmt clean devtools help
+.PHONY: geth searcher all test lint fmt clean devtools help
 
 GOBIN = ./build/bin
 GO ?= latest
@@ -13,6 +13,12 @@ geth:
 	$(GORUN) build/ci.go install ./cmd/geth
 	@echo "Done building."
 	@echo "Run \"$(GOBIN)/geth\" to launch geth."
+
+#? searcher: Build the MEV searcher.
+searcher:
+	$(GORUN) build/ci.go install ./cmd/searcher
+	@echo "Done building."
+	@echo "Run \"$(GOBIN)/searcher\" to launch the MEV searcher."
 
 #? all: Build all packages and executables.
 all:

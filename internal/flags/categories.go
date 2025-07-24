@@ -27,6 +27,7 @@ const (
 	BlobPoolCategory   = "TRANSACTION POOL (BLOB)"
 	PerfCategory       = "PERFORMANCE TUNING"
 	AccountCategory    = "ACCOUNT"
+	FastNodeCategory   = "FAST NODE"
 	APICategory        = "API AND CONSOLE"
 	NetworkingCategory = "NETWORKING"
 	MinerCategory      = "MINER"

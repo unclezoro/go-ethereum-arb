@@ -123,8 +123,26 @@ func loadAndParseJournal(db ethdb.KeyValueStore, base *diskLayer) (snapshot, jou
 	return current, generator, nil
 }
 
+func PreCheckSnapshot(db ethdb.KeyValueStore, root common.Hash) (bool, error) {
+	baseRoot := rawdb.ReadSnapshotRoot(db)
+	if baseRoot == (common.Hash{}) {
+		return false, errors.New("missing or corrupted snapshot")
+	}
+	if baseRoot == root {
+		return true, nil
+	}
+	var found bool
+	err := iterateJournal(db, func(parent common.Hash, current common.Hash, accountData map[common.Hash][]byte, storageData map[common.Hash]map[common.Hash][]byte) error {
+		if current == root {
+			found = true
+		}
+		return nil
+	})
+	return found, err
+}
+
 // loadSnapshot loads a pre-existing state snapshot backed by a key-value store.
-func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *triedb.Database, root common.Hash, cache int, recovery bool, noBuild bool) (snapshot, bool, error) {
+func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *triedb.Database, root common.Hash, cache int, recovery bool, noBuild bool, withoutTrie bool) (snapshot, bool, error) {
 	// If snapshotting is disabled (initial sync in progress), don't do anything,
 	// wait for the chain to permit us to do something meaningful
 	if rawdb.ReadSnapshotDisabled(diskdb) {
@@ -156,6 +174,9 @@ func loadSnapshot(diskdb ethdb.KeyValueStore, triedb *triedb.Database, root comm
 	// which is below the snapshot. In this case the snapshot can be recovered
 	// by re-executing blocks but right now it's unavailable.
 	if head := snapshot.Root(); head != root {
+		if withoutTrie {
+			return snapshot, false, nil
+		}
 		// If it's legacy snapshot, or it's new-format snapshot but
 		// it's not in recovery mode, returns the error here for
 		// rebuilding the entire snapshot forcibly.

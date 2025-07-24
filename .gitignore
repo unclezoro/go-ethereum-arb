@@ -30,6 +30,15 @@
 /geth*.zip.sig
 /geth*.zip.asc
 
+./trade/binance_test.go
+trade/binance_test.go
+trade/crypto_test.go
+trade/config/config.json
+trade/txhistory.md
+trade/pair_executor_test.go
+trade/network-info.md
+trade/metrics/*
+
 
 # travis
 profile.tmp
@@ -43,3 +52,4 @@ profile.cov
 .vscode
 
 tests/spec-tests/
+trade/config/config copy.json

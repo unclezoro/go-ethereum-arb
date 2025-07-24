@@ -85,11 +85,15 @@ type StateDB struct {
 	db         Database
 	prefetcher *triePrefetcher
 	trie       Trie
+	noTrie     bool
 	reader     Reader
 
 	// originalRoot is the pre-state root, before any changes were made.
 	// It will be updated when the Commit is called.
 	originalRoot common.Hash
+	expectedRoot common.Hash // The state root in the block header
+
+	fullProcessed bool
 
 	// This map holds 'live' objects, which will get modified while
 	// processing a state transition.
@@ -171,6 +175,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 	if err != nil {
 		return nil, err
 	}
+	_, noTrie := tr.(*trie.EmptyTrie)
 	reader, err := db.Reader(root)
 	if err != nil {
 		return nil, err
@@ -186,6 +191,7 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 
 		db:                   db,
 		trie:                 tr,
+		noTrie:               noTrie,
 		originalRoot:         root,
 		reader:               reader,
 		stateObjects:         make(map[common.Address]*stateObject),
@@ -223,6 +229,9 @@ func (s *StateDB) Reader() Reader {
 // state trie concurrently while the state is mutated so that when we reach the
 // commit phase, most of the needed data is already hot.
 func (s *StateDB) StartPrefetcher(namespace string, witness *stateless.Witness) {
+	if s.noTrie {
+		return
+	}
 	// Terminate any previously running prefetcher
 	s.StopPrefetcher()
 
@@ -247,6 +256,9 @@ func (s *StateDB) StartPrefetcher(namespace string, witness *stateless.Witness) 
 // StopPrefetcher terminates a running prefetcher and reports any leftover stats
 // from the gathered metrics.
 func (s *StateDB) StopPrefetcher() {
+	if s.noTrie {
+		return
+	}
 	if s.prefetcher != nil {
 		s.prefetcher.terminate(false)
 		s.prefetcher.report()
@@ -254,11 +266,19 @@ func (s *StateDB) StopPrefetcher() {
 	}
 }
 
+func (s *StateDB) SetExpectedStateRoot(root common.Hash) {
+	s.expectedRoot = root
+}
+
 // setError remembers the first non-nil error it is called with.
 func (s *StateDB) setError(err error) {
 	if s.dbErr == nil {
 		s.dbErr = err
 	}
+}
+
+func (s *StateDB) NoTrie() bool {
+	return s.noTrie
 }
 
 // Error returns the memorized database failure occurred earlier.
@@ -285,6 +305,11 @@ func (s *StateDB) GetLogs(hash common.Hash, blockNumber uint64, blockHash common
 		l.BlockHash = blockHash
 	}
 	return logs
+}
+
+// Mark that the block is full processed
+func (s *StateDB) MarkFullProcessed() {
+	s.fullProcessed = true
 }
 
 func (s *StateDB) Logs() []*types.Log {
@@ -343,6 +368,14 @@ func (s *StateDB) GetBalance(addr common.Address) *uint256.Int {
 		return stateObject.Balance()
 	}
 	return common.U2560
+}
+
+func (s *StateDB) GetSnap() snapshot.Snapshot {
+	snaps := s.db.Snapshot()
+	if snaps != nil {
+		return snaps.Snapshot(s.originalRoot)
+	}
+	return nil
 }
 
 // GetNonce retrieves the nonce from the given address or 0 if object not found
@@ -604,6 +637,9 @@ func (s *StateDB) GetTransientState(addr common.Address, key common.Hash) common
 
 // updateStateObject writes the given object to the trie.
 func (s *StateDB) updateStateObject(obj *stateObject) {
+	if s.noTrie {
+		return
+	}
 	// Encode the account and update the account trie
 	addr := obj.Address()
 	if err := s.trie.UpdateAccount(addr, &obj.data, len(obj.code)); err != nil {
@@ -616,6 +652,9 @@ func (s *StateDB) updateStateObject(obj *stateObject) {
 
 // deleteStateObject removes the given object from the state trie.
 func (s *StateDB) deleteStateObject(addr common.Address) {
+	if s.noTrie {
+		return
+	}
 	if err := s.trie.DeleteAccount(addr); err != nil {
 		s.setError(fmt.Errorf("deleteStateObject (%x) error: %v", addr[:], err))
 	}
@@ -1046,7 +1085,11 @@ func (s *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	if s.witness != nil {
 		s.witness.AddState(s.trie.Witness())
 	}
-	return hash
+	if s.noTrie {
+		return s.expectedRoot
+	} else {
+		return hash
+	}
 }
 
 // SetTxContext sets the current transaction hash and index which are
@@ -1100,9 +1143,6 @@ func (s *StateDB) fastDeleteStorage(snaps *snapshot.Tree, addrHash common.Hash, 
 	}
 	if err := iter.Error(); err != nil { // error might occur during iteration
 		return nil, nil, nil, err
-	}
-	if stack.Hash() != root {
-		return nil, nil, nil, fmt.Errorf("snapshot is not matched, exp %x, got %x", root, stack.Hash())
 	}
 	return storages, storageOrigins, nodes, nil
 }
@@ -1324,9 +1364,17 @@ func (s *StateDB) commit(deleteEmptyObjects bool, noStorageWiping bool) (*stateU
 	// Obviously it's not an end of the world issue, just something the original
 	// code didn't anticipate for.
 	workers.Go(func() error {
+		if s.noTrie {
+			root = s.expectedRoot
+			return nil
+		}
 		// Write the account trie changes, measuring the amount of wasted time
 		newroot, set := s.trie.Commit(true)
 		root = newroot
+		if s.fullProcessed && s.expectedRoot != root {
+			log.Error("Invalid merkle root", "remote", s.expectedRoot, "local", root)
+			return fmt.Errorf("invalid merkle root (remote: %x local: %x)", s.expectedRoot, root)
+		}
 
 		if err := merge(set); err != nil {
 			return err
@@ -1433,6 +1481,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 			start := time.Now()
 			if err := snap.Update(ret.root, ret.originRoot, ret.accounts, ret.storages); err != nil {
 				log.Warn("Failed to update snapshot tree", "from", ret.originRoot, "to", ret.root, "err", err)
+				return nil, err
 			}
 			// Keep 128 diff layers in the memory, persistent layer is 129th.
 			// - head layer is paired with HEAD state
@@ -1444,7 +1493,7 @@ func (s *StateDB) commitAndFlush(block uint64, deleteEmptyObjects bool, noStorag
 			s.SnapshotCommits += time.Since(start)
 		}
 		// If trie database is enabled, commit the state update as a new layer
-		if db := s.db.TrieDB(); db != nil {
+		if db := s.db.TrieDB(); db != nil && !s.noTrie {
 			start := time.Now()
 			if err := db.Update(ret.root, ret.originRoot, block, ret.nodes, ret.stateSet()); err != nil {
 				return nil, err

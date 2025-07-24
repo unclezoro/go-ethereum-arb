@@ -114,6 +114,7 @@ type Config struct {
 	CleanCacheSize  int    // Maximum memory allowance (in bytes) for caching clean nodes
 	WriteBufferSize int    // Maximum memory allowance (in bytes) for write buffer
 	ReadOnly        bool   // Flag whether the database is opened in read only mode.
+	NoTries         bool
 }
 
 // sanitize checks the provided user configurations and changes anything that's
@@ -254,6 +255,9 @@ func (db *Database) repairHistory() error {
 	// Open the freezer for state history. This mechanism ensures that
 	// only one database instance can be opened at a time to prevent
 	// accidental mutation.
+	if db.config.NoTries {
+		return nil
+	}
 	ancient, err := db.diskdb.AncientDatadir()
 	if err != nil {
 		// TODO error out if ancient store is disabled. A tons of unit tests
@@ -287,13 +291,13 @@ func (db *Database) repairHistory() error {
 	}
 	// Truncate the extra state histories above in freezer in case it's not
 	// aligned with the disk layer. It might happen after a unclean shutdown.
-	pruned, err := truncateFromHead(db.diskdb, db.freezer, id)
-	if err != nil {
-		log.Crit("Failed to truncate extra state histories", "err", err)
-	}
-	if pruned != 0 {
-		log.Warn("Truncated extra state histories", "number", pruned)
-	}
+	//pruned, err := truncateFromHead(db.diskdb, db.freezer, id)
+	//if err != nil {
+	//	log.Crit("Failed to truncate extra state histories", "err", err)
+	//}
+	//if pruned != 0 {
+	//	log.Warn("Truncated extra state histories", "number", pruned)
+	//}
 	return nil
 }
 
@@ -339,6 +343,13 @@ func (db *Database) Commit(root common.Hash, report bool) error {
 		return err
 	}
 	return db.tree.cap(root, 0)
+}
+
+// Head return the top non-fork difflayer/disklayer root hash for rewinding.
+func (db *Database) Head() common.Hash {
+	db.lock.Lock()
+	defer db.lock.Unlock()
+	return db.tree.front()
 }
 
 // Disable deactivates the database and invalidates all available state layers
